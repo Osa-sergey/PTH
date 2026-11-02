@@ -14,13 +14,13 @@ description: Реализация задачи с трассировкой в Pr
 
 ## Шаги
 
-1. Проверь доступ и права: `python3 sdk/pth_client.py me`. Для записи нужна роль writer.
-2. Собери контекст каждого ID: `python3 sdk/pth_client.py context <KEY> <ID> --depth 1` и `impact`. Если требование потеряно или его не отражает ФТ, скажи пользователю до начала работы.
+1. Проверь доступ и права: `sdk/pth me`. Для записи нужна роль writer.
+2. Собери контекст каждого ID: `sdk/pth context <KEY> <ID> --depth 1` и `impact`. Если требование потеряно или его не отражает ФТ, скажи пользователю до начала работы.
 3. Составь план через скилл `pth-plan-implementation`. Дай пользователю подтвердить план.
 4. Реализуй задачу в репозитории. Запускай тесты проекта, которые существуют. Не выдумывай результат тестов.
-5. После коммита, с подтверждением: `python3 sdk/pth_client.py commit <KEY> <SHA> "<заголовок>" --implements <ID>` (см. `pth-register-code`).
-6. Если появился тест, связанный с требованием, заведи его как артефакт TEST с связью `verifies`. Запиши результат, только если он реально получен: `python3 sdk/pth_client.py evidence <KEY> <TEST-ID> pass|fail --commit <SHA>`.
-7. Проверь итог: `python3 sdk/pth_client.py compliance <KEY>` и `context` по ID.
+5. После коммита, с подтверждением: `sdk/pth commit <KEY> <SHA> "<заголовок>" --implements <ID>` (см. `pth-register-code`).
+6. Если появился тест, связанный с требованием, с подтверждением заведи его: `sdk/pth test <KEY> "pytest: <имя>" --verifies <ID> [<ID> ...]` (неполное покрытие — `--coverage partial --gap "<что не покрыто>"`). Повтор с тем же названием не создаёт дубль, а добавляет недостающие связи. Запиши результат, только если он реально получен: `sdk/pth evidence <KEY> <TEST-ID> pass|fail --commit <SHA>`.
+7. Проверь итог: `sdk/pth compliance <KEY>` и `context` по ID.
 
 ## Выход
 

@@ -550,7 +550,8 @@ def search(key: str, q: str = Query(min_length=1, max_length=200), type: str | N
 def context(key: str, focus: str, depth: int = Query(default=1, ge=1, le=2), session: Session = Depends(get_session)):
     card = _artifact_out(session, domain.get_artifact(session, key, focus))
     graph = domain.graph(session, key, focus, depth, "both", GRAPH_LIMIT_MAX)
-    all_kinds = domain.lost_items(session, key)[0] + domain.lost_items(session, key, reason="no_code_link")[0]
+    all_kinds = [i for reason in ("no_reflection", "no_code_link", "unverified_commit")
+                 for i in domain.lost_items(session, key, reason=reason)[0]]
     lost_item = next((i for i in all_kinds if i["display_id"] == focus), None)
     drafts = session.scalars(select(ChangeSet).where(ChangeSet.project_key == key, ChangeSet.state == "draft"))
     return {
@@ -1317,13 +1318,13 @@ def status(key: str, session: Session = Depends(get_session)):
 # --- анализ --------------------------------------------------------------------
 
 @router.get("/projects/{key}/lost", response_model=LostOut,
-            summary="Потерянные элементы (reason=no_reflection по умолчанию) или не реализованные (reason=no_code_link)")
+            summary="Потерянные элементы (reason=no_reflection по умолчанию), не реализованные (no_code_link) или реализованные непроверенным коммитом (unverified_commit)")
 def lost(
     response: Response,
     key: str,
     type: str | None = Query(default=None),
     priority: str | None = Query(default=None, pattern=r"^P[0-3]$"),
-    reason: str = Query(default="no_reflection", pattern="^(no_code_link|no_reflection)$"),
+    reason: str = Query(default="no_reflection", pattern="^(no_code_link|no_reflection|unverified_commit)$"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=500),
     session: Session = Depends(get_session),

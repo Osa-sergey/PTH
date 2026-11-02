@@ -60,3 +60,50 @@ def test_lost_and_graph_helpers(api):
 def test_invalid_mode_is_rejected_locally(api):
     with pytest.raises(ValueError):
         api.import_spec("PTH", "s.md", SNIPPET, mode="commit")
+
+
+def test_artifacts_reads_all_pages(api):
+    """Раньше клиент получал только первую страницу (20): проверка «тест уже заведён?» его не видела."""
+    for n in range(25):
+        api._request("POST", "/projects/PTH/artifacts", json={"type": "FR", "title": f"ФТ {n}"})
+    assert len(api.artifacts("PTH")) == 25
+    api.PAGE = 10  # несколько страниц подряд, включая неполную последнюю
+    assert [a["title"] for a in api.artifacts("PTH", "FR")] == [f"ФТ {n}" for n in range(25)]
+
+
+def test_register_test_is_idempotent_and_links_verifies(api):
+    api.import_spec("PTH", "spec.md", SNIPPET + "| PTH-FR-002 | Импорт | PTH-US-001 |\n", mode="apply")
+    first = api.register_test("PTH", "pytest: test_x", ["PTH-FR-001"], coverage="partial", gaps=["нет отказа сети"])
+    assert first == {"test": "PTH-TEST-001", "created": True, "verifies_added": ["PTH-FR-001"]}
+    again = api.register_test("PTH", "pytest: test_x", ["PTH-FR-001", "PTH-FR-002"], coverage="partial")
+    assert again == {"test": "PTH-TEST-001", "created": False, "verifies_added": ["PTH-FR-002"]}
+    assert len(api.artifacts("PTH", "TEST")) == 1
+    full = api.register_test("PTH", "pytest: test_x", ["PTH-FR-001"])
+    assert full["verifies_added"] == [] and "coverage=partial" in full["note"]
+
+
+def test_register_test_checks_targets_before_creating(api):
+    with pytest.raises(PTHError) as exc:
+        api.register_test("PTH", "pytest: test_typo", ["PTH-FR-404"])
+    assert exc.value.code == "ARTIFACT_NOT_FOUND" and api.artifacts("PTH", "TEST") == []
+
+
+def test_register_test_partial_requires_gaps(api):
+    api.import_spec("PTH", "spec.md", SNIPPET, mode="apply")
+    with pytest.raises(PTHError) as exc:
+        api.register_test("PTH", "pytest: test_y", ["PTH-FR-001"], coverage="partial")
+    assert exc.value.code == "COVERAGE_GAPS_REQUIRED" and api.artifacts("PTH", "TEST") == []
+
+
+def test_register_test_reuses_lowest_numbered_duplicate(api, tmp_path):
+    """Дубли TEST, заведённые раньше (скриптами в обход клиента): берётся канонический — с меньшим номером."""
+    import sqlite3
+    api.import_spec("PTH", "spec.md", SNIPPET, mode="apply")
+    api._request("POST", "/projects/PTH/artifacts", json={"type": "TEST", "title": "pytest: dup"})
+    with sqlite3.connect(tmp_path / "c.db") as con:  # старый дубль
+        con.execute("INSERT INTO artifacts (uid, project_key, type, number, display_id, created_at) "
+                    "VALUES ('d', 'PTH', 'TEST', 2, 'PTH-TEST-002', '2026-01-01')")
+        con.execute("INSERT INTO artifact_revisions (uid, artifact_uid, number, title, text, attributes, created_at) "
+                    "VALUES ('d1', 'd', 1, 'pytest: dup', '', '{}', '2026-01-01')")
+    assert len(api.artifacts("PTH", "TEST")) == 2
+    assert api.register_test("PTH", "pytest: dup", ["PTH-FR-001"])["test"] == "PTH-TEST-001"

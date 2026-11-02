@@ -4,18 +4,19 @@
     api = PTHClient("http://127.0.0.1:8000", token=os.environ["PTH_TOKEN"])
     report = api.import_spec("PTH", "spec.md", text, mode="dry_run")
 
-Командная строка (переменные PTH_URL и PTH_TOKEN):
-    python3 sdk/pth_client.py projects
-    python3 sdk/pth_client.py import PTH путь/к/spec.md --dry-run
-    python3 sdk/pth_client.py import PTH путь/к/spec.md --changeset
-    python3 sdk/pth_client.py apply-changeset PTH <uid>
-    python3 sdk/pth_client.py artifact PTH PTH-US-001
-    python3 sdk/pth_client.py context PTH PTH-US-001 --depth 2
-    python3 sdk/pth_client.py search PTH "импорт" --type FR
-    python3 sdk/pth_client.py status PTH
-    python3 sdk/pth_client.py me
-    python3 sdk/pth_client.py lost PTH --type FR
-    python3 sdk/pth_client.py graph PTH PTH-US-001 --depth 2
+Командная строка (переменные PTH_URL и PTH_TOKEN; `sdk/pth` сам выбирает Python ≥ 3.10 с httpx, обычно server/.venv):
+    sdk/pth projects
+    sdk/pth import PTH путь/к/spec.md --dry-run
+    sdk/pth import PTH путь/к/spec.md --changeset
+    sdk/pth apply-changeset PTH <uid>
+    sdk/pth artifact PTH PTH-US-001
+    sdk/pth context PTH PTH-US-001 --depth 2
+    sdk/pth search PTH "импорт" --type FR
+    sdk/pth status PTH
+    sdk/pth me
+    sdk/pth lost PTH --type FR
+    sdk/pth graph PTH PTH-US-001 --depth 2
+    sdk/pth test PTH "pytest: test_x" --verifies PTH-FR-001 --coverage partial --gap "нет отказа сети"
 
 Зависимость: httpx. Ошибки API поднимаются как PTHError с полями status, code, message.
 """
@@ -36,6 +37,8 @@ class PTHError(Exception):
 
 
 class PTHClient:
+    PAGE = 500  # максимум limit у списков API
+
     def __init__(self, base_url: str, token: str, http: Any = None, timeout: float = 60.0):
         self._token = token
         self._http = http if http is not None else httpx.Client(base_url=base_url.rstrip("/") + "/v1", timeout=timeout)
@@ -133,7 +136,51 @@ class PTHClient:
         return self._request("POST", "/projects", json={"key": key, "name": name})
 
     def artifacts(self, key: str, type_: str | None = None) -> list[dict]:
-        return self._request("GET", f"/projects/{key}/artifacts", params={"type": type_} if type_ else None)
+        """Все артефакты проекта. API отдаёт страницами (по умолчанию 20), поэтому читаем до конца:
+        неполный список приводил к дублям TEST при проверке «уже заведён?»."""
+        items: list[dict] = []
+        while True:
+            params = {"offset": len(items), "limit": self.PAGE, **({"type": type_} if type_ else {})}
+            page = self._request("GET", f"/projects/{key}/artifacts", params=params)
+            items += page
+            if len(page) < self.PAGE:
+                return items
+
+    def relations(self, key: str) -> list[dict]:
+        return self._request("GET", f"/projects/{key}/relations")
+
+    def register_test(self, key: str, title: str, verifies: list[str], coverage: str = "full",
+                      gaps: list[str] | None = None) -> dict:
+        """Заводит TEST со связями verifies. Повторный вызов с тем же названием не создаёт дубль, а
+        добавляет недостающие связи: артефакты неизменяемы и через API не удаляются. Требования
+        проверяются до создания, чтобы опечатка в ID не оставила TEST без связей."""
+        targets = [self.artifact(key, d)["display_id"] for d in verifies]
+        norm = " ".join(title.split())  # пробелы схлопнуты, регистр важен
+        same = [a for a in self.artifacts(key, "TEST") if " ".join(a["title"].split()) == norm]
+        if same:  # при старых дублях канонический — с меньшим номером (сортировка по строке ломается после 999)
+            test, created = min(same, key=lambda a: int(a["display_id"].rsplit("-", 1)[1])), False
+        else:
+            attributes = {"coverage": coverage, **({"coverage_gaps": gaps} if gaps else {})}
+            test = self._request("POST", f"/projects/{key}/artifacts",
+                                 json={"type": "TEST", "title": title, "attributes": attributes})
+            created = True
+        tid = test["display_id"]
+        linked = {r["target"] for r in self.relations(key) if r["type"] == "verifies" and r["source"] == tid}
+        added = []
+        for t in targets:
+            if t in linked:
+                continue
+            try:
+                self._request("POST", f"/projects/{key}/relations", json={"type": "verifies", "source": tid, "target": t})
+                added.append(t)
+            except PTHError as exc:
+                if exc.code != "DUPLICATE_RELATION":  # связь параллельно добавил кто-то ещё — она уже есть
+                    raise
+        result = {"test": tid, "created": created, "verifies_added": added}
+        if not created and test["attributes"].get("coverage", "full") != coverage:
+            result["note"] = (f"У существующего {tid} coverage={test['attributes'].get('coverage', 'full')}; "
+                              "это поле здесь не меняется — нужна новая ревизия артефакта")
+        return result
 
     def artifact(self, key: str, display_id: str) -> dict:
         return self._request("GET", f"/projects/{key}/artifacts/{display_id}")
@@ -207,6 +254,12 @@ def _cli(argv: list[str]) -> int:
     p_attach.add_argument("path")
     p_imp_rules = sub.add_parser("impact-rules", help="встроенные и свои правила влияния с пояснениями")
     p_imp_rules.add_argument("key")
+    p_test = sub.add_parser("test", help="завести TEST со связями verifies (повтор с тем же названием не дублирует)")
+    p_test.add_argument("key")
+    p_test.add_argument("title", help="название, например «pytest: test_import_dry_run»")
+    p_test.add_argument("--verifies", nargs="+", required=True)
+    p_test.add_argument("--coverage", choices=["full", "partial"], default="full")
+    p_test.add_argument("--gap", action="append", help="что не покрыто (обязательно при partial; можно несколько)")
     p_com = sub.add_parser("commit")
     p_com.add_argument("key")
     p_com.add_argument("sha")
@@ -248,8 +301,9 @@ def _cli(argv: list[str]) -> int:
     p_lost.add_argument("key")
     p_lost.add_argument("--type")
     p_lost.add_argument("--priority")
-    p_lost.add_argument("--reason", choices=["no_reflection", "no_code_link"],
-                        help="no_reflection — потерянные (по умолчанию); no_code_link — не реализованные")
+    p_lost.add_argument("--reason", choices=["no_reflection", "no_code_link", "unverified_commit"],
+                        help="no_reflection — потерянные (по умолчанию); no_code_link — не реализованные; "
+                             "unverified_commit — реализованы только коммитами с непроверенным SHA")
     p_graph = sub.add_parser("graph")
     p_graph.add_argument("key")
     p_graph.add_argument("focus")
@@ -286,6 +340,10 @@ def _cli(argv: list[str]) -> int:
             result = api.attach(args.key, args.evidence, args.path)
         elif args.cmd == "impact-rules":
             result = api.impact_rules(args.key)
+        elif args.cmd == "test":
+            if args.coverage == "partial" and not args.gap:
+                p_test.error("при --coverage partial укажите --gap: что не покрыто")
+            result = api.register_test(args.key, args.title, args.verifies, args.coverage, args.gap)
         elif args.cmd == "commit":
             result = api.register_commit(args.key, args.sha, args.title, args.implements)
         elif args.cmd == "review":

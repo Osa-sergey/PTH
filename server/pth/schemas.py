@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 ArtifactType = Literal["US", "FR", "NFR", "AC", "ADR", "COMMIT", "TEST", "DIAGRAM"]
 RelationType = Literal["refines", "motivates", "implements", "verifies", "illustrates"]
-LostReason = Literal["no_code_link", "no_reflection"]
+LostReason = Literal["no_code_link", "no_reflection", "unverified_commit"]
 Direction = Literal["out", "in", "both"]
 
 
