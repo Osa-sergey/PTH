@@ -16,18 +16,18 @@ description: Импорт принятой спецификации (markdown с
 
 ## Шаги
 
-1. Проверь доступ: `python3 sdk/pth_client.py projects`. Ошибка 401 или 403 — сообщи пользователю код и текст, не обходи.
+1. Проверь доступ: `sdk/pth projects`. Ошибка 401 или 403 — сообщи пользователю код и текст, не обходи.
 2. Прочитай файл целиком. Не импортируй фрагмент и не сокращай текст.
 3. Предпросмотр без записи:
-   `python3 sdk/pth_client.py import <KEY> <файл> --dry-run`
+   `sdk/pth import <KEY> <файл> --dry-run`
 4. Покажи пользователю сводку: создано, изменено, без изменений, связей, нераспознано, и список `changes` по ID.
 5. Если `unparsed` не пуст, перечисли строки и спроси, исправлять ли файл. Не импортируй их молча.
 6. Спроси подтверждение. Записывай через черновик, а не напрямую:
-   `python3 sdk/pth_client.py import <KEY> <файл> --changeset`
+   `sdk/pth import <KEY> <файл> --changeset`
    Выведи `changeset_uid`.
 7. Примени черновик только после явного «да» пользователя:
-   `python3 sdk/pth_client.py apply-changeset <KEY> <uid>`
-8. Проверь результат: `python3 sdk/pth_client.py lost <KEY> --type US` и сообщи число потерянных user story.
+   `sdk/pth apply-changeset <KEY> <uid>`
+8. Проверь результат: `sdk/pth lost <KEY> --type US` и сообщи число потерянных user story.
 
 ## Выход
 

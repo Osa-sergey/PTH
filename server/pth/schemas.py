@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 ArtifactType = Literal["US", "FR", "NFR", "AC", "ADR", "COMMIT", "TEST", "DIAGRAM"]
 RelationType = Literal["refines", "motivates", "implements", "verifies", "illustrates"]
-LostReason = Literal["no_code_link", "no_reflection"]
+LostReason = Literal["no_code_link", "no_reflection", "unverified_commit"]
 Direction = Literal["out", "in", "both"]
 
 
@@ -58,6 +58,14 @@ class ArtifactOut(BaseModel):
     attributes: dict
     exemption_reason: str | None
     created_at: datetime
+    archived_at: datetime | None = None
+    archive_reason: str | None = None
+    replaced_by: str | None = Field(default=None, description="display_id преемника, если элемент заменён")
+
+
+class ArchiveIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000, description="почему элемент уходит в архив")
+    replaced_by: str | None = Field(default=None, description="display_id элемента, который его заменяет")
 
 
 class RelationIn(BaseModel):
@@ -201,6 +209,7 @@ class GraphNode(BaseModel):
     not_implemented: bool = False
     level: int = 0  # расстояние от центра графа в связях
     reasons: list[LostReason]
+    archived: bool = False  # центр графа в архиве (архивные соседи в граф не попадают)
 
 
 class GraphEdge(BaseModel):

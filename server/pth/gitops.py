@@ -44,6 +44,14 @@ def resolve_commit(repo: str, sha: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def prefix_matches(repo: str, sha: str) -> int:
+    """Сколько объектов репозитория начинается с этого префикса (git требует от 4 символов)."""
+    if not re.match(r"^[0-9a-f]{4,40}$", sha or ""):
+        return 0
+    result = _run(repo, "rev-parse", f"--disambiguate={sha}")
+    return len(result.stdout.split()) if result.returncode == 0 else 0
+
+
 def path_exists_at(repo: str, oid: str, path: str) -> bool:
     """Проверка code_refs из manifest: путь существует в закреплённом коммите."""
     return _run(repo, "cat-file", "-e", f"{oid}:{path}").returncode == 0

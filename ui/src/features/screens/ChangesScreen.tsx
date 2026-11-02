@@ -9,9 +9,10 @@ import { SourcePane } from '@/features/import/SourcePane';
 import type { ChangeOp, ChangeSet, ChangeSetReview } from '@/entities/pth/types';
 
 const dateTime = (iso: string) => new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-const KIND_LABEL: Record<string, string> = { create: 'создаётся', revise: 'новая ревизия', link: 'связь', unlink: 'удаление связи' };
+const KIND_LABEL: Record<string, string> = { create: 'создаётся', revise: 'новая ревизия', link: 'связь', unlink: 'удаление связи', archive: 'в архив', restore: 'из архива' };
 const COUNT_LABEL: Record<string, [string, string, string]> = {
   create: ['элемент', 'элемента', 'элементов'], revise: ['ревизия', 'ревизии', 'ревизий'], link: ['связь', 'связи', 'связей'], unlink: ['удаление связи', 'удаления связей', 'удалений связей'],
+  archive: ['в архив', 'в архив', 'в архив'], restore: ['из архива', 'из архива', 'из архива'],
 };
 const plural = (n: number, w: [string, string, string]) => { const m = n % 100; const d = n % 10; return `${n} ${m >= 11 && m <= 14 ? w[2] : d === 1 ? w[0] : d >= 2 && d <= 4 ? w[1] : w[2]}`; };
 const REL_LABEL: Record<string, string> = { refines: 'уточняет', motivates: 'опирается на решение', implements: 'реализует', verifies: 'проверяет', illustrates: 'иллюстрирует' };
@@ -75,7 +76,7 @@ function ChangeTable({ rows, onOpen }: { rows: ChangeSet[]; onOpen: (uid: string
   const kindCounts = (cs: ChangeSet) => {
     const c: Record<string, number> = {};
     for (const op of cs.operations) {
-      const k = op.op === 'create_artifact' ? 'create' : op.op === 'add_revision' ? 'revise' : op.op === 'create_relation' ? 'link' : op.op === 'delete_relation' ? 'unlink' : 'other';
+      const k = op.op === 'create_artifact' ? 'create' : op.op === 'add_revision' ? 'revise' : op.op === 'create_relation' ? 'link' : op.op === 'delete_relation' ? 'unlink' : op.op === 'archive_artifact' ? 'archive' : op.op === 'restore_artifact' ? 'restore' : 'other';
       c[k] = (c[k] ?? 0) + 1;
     }
     return Object.entries(c).filter(([k]) => k !== 'other').map(([k, n]) => plural(n, COUNT_LABEL[k])).join(' · ') || `${cs.operation_count} операций`;
@@ -177,7 +178,7 @@ function OpCard({ op, checked }: { op: ChangeOp; checked: boolean }) {
     <li className={`flex flex-col gap-2 rounded-card border p-3 ${op.status === 'error' ? 'border-danger-text' : 'border-border'} bg-surface`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-meta text-text-muted">{op.index + 1}.</span>
-        <Badge label={KIND_LABEL[op.kind ?? ''] ?? String(op.kind)} tone={op.kind === 'create' ? 'success' : op.kind === 'revise' ? 'warning' : op.kind === 'unlink' ? 'danger' : 'info'} />
+        <Badge label={KIND_LABEL[op.kind ?? ''] ?? String(op.kind)} tone={op.kind === 'create' ? 'success' : op.kind === 'revise' ? 'warning' : op.kind === 'unlink' || op.kind === 'archive' ? 'danger' : 'info'} />
         {op.display_id && <CopyId value={op.display_id} className="font-mono text-meta">{op.display_id}</CopyId>}
         {op.type && op.kind === 'create' && <span className="text-meta text-text-muted">{op.type}</span>}
         {checked && status && <span className="ml-auto"><StatusText label={status.label} tone={status.tone} /></span>}
@@ -190,7 +191,14 @@ function OpCard({ op, checked }: { op: ChangeOp; checked: boolean }) {
           <span className="font-mono text-meta">{op.target}</span> <span className="text-text-muted">{op.target_title ? `(${op.target_title})` : ''}</span>
         </p>
       )}
-      {op.kind !== 'create' && op.kind !== 'revise' && op.kind !== 'link' && op.kind !== 'unlink' && <p className="text-ui text-danger-text">Неизвестная операция: {String(op.kind)}</p>}
+      {(op.kind === 'archive' || op.kind === 'restore') && (
+        <p className="text-ui text-text">
+          {op.title && <span>{op.title}</span>}
+          {op.kind === 'archive' && op.reason && <span className="text-text-muted"> — причина: {op.reason}</span>}
+          {op.kind === 'archive' && op.replaced_by && <span className="text-text-muted"> · заменён на <span className="font-mono text-meta">{op.replaced_by}</span></span>}
+        </p>
+      )}
+      {!['create', 'revise', 'link', 'unlink', 'archive', 'restore'].includes(op.kind ?? '') && <p className="text-ui text-danger-text">Неизвестная операция: {String(op.kind)}</p>}
       {op.error && <p className="text-meta text-danger-text">{op.error}</p>}
     </li>
   );

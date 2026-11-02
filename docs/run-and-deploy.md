@@ -109,7 +109,7 @@ cd ui && npm run test && npm run typecheck && npm run build
 
 ### Данные и резервные копии
 
-- Все данные в одном файле SQLite (`server/pth.db`); копия без остановки сервера: `cd server && .venv/bin/python scripts/backup_db.py` (в `server/backups/`). Восстановление: остановить сервер, заменить файл.
+- Все данные в SQLite `server/pth.db` в режиме WAL: рядом лежат `pth.db-wal` (последние записи, ещё не перенесённые в основной файл) и `pth.db-shm`. Копия без остановки сервера: `cd server && .venv/bin/python scripts/backup_db.py` (в `server/backups/`); `cp pth.db` для копии не годится — теряет записи из `-wal`. Восстановление: остановить сервер, удалить `pth.db-wal` и `pth.db-shm`, заменить `pth.db` копией. Если оставить старый `-wal`, SQLite применит его к копии и база будет повреждена.
 - PostgreSQL через `PTH_DATABASE_URL` теоретически возможен, но драйвер не входит в `requirements.txt` и на нём не тестировалось.
 
 ### Ограничения текущего среза
