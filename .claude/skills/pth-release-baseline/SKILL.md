@@ -14,12 +14,12 @@ description: Проверка готовности релиза в Project Trace
 
 ## Шаги
 
-1. Проверь доступ: `python3 sdk/pth_client.py me`.
-2. Получи готовность: `python3 sdk/pth_client.py readiness <KEY>`. Вердикт: `ready`, `not_ready` или `insufficient_data`.
+1. Проверь доступ: `sdk/pth me`.
+2. Получи готовность: `sdk/pth readiness <KEY>`. Вердикт: `ready`, `not_ready` или `insufficient_data`.
 3. Покажи блокирующие элементы (`blocking`) с их статусом. При большом списке сгруппируй по статусу.
 4. Если вердикт `ready`, скажи, что это данные, а не решение о релизе. Решение принимает пользователь.
-5. Снимок фиксируй только по явной просьбе и с подтверждением: `python3 sdk/pth_client.py baseline <KEY> "<название>"`.
-6. Список снимков: `python3 sdk/pth_client.py baselines <KEY>`.
+5. Снимок фиксируй только по явной просьбе и с подтверждением: `sdk/pth baseline <KEY> "<название>"`.
+6. Список снимков: `sdk/pth baselines <KEY>`.
 
 ## Выход
 

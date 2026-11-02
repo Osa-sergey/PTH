@@ -370,3 +370,28 @@ def test_release_marks_requirements_without_story_and_usm_marks_dependencies(env
         a.post("/v1/projects/PTH/releases/move", json={"display_id": "PTH-US-001", "from_release": r, "to_release": None, "with_related": False})
         by = {i["display_id"]: i for i in a.get(f"/v1/projects/PTH/releases/{r}").json()["progress"]["items"]}
         assert by["PTH-FR-001"]["without_story"] is True and by["PTH-FR-001"]["stories_missing"] == ["PTH-US-001"]
+
+
+def test_register_commit_checks_sha_against_connected_repo(env, repo):
+    """PTH-FR-046: при подключённом репозитории неизвестный SHA не регистрируется, короткий разворачивается."""
+    app, admin, _ = env
+    head = _git(repo, "rev-parse", "HEAD")
+    with client_for(app, admin) as a:
+        seed(a)
+        unverified = a.post("/v1/projects/PTH/commits", json={"sha": "0" * 40, "title": "до репозитория", "implements": []})
+        assert unverified.status_code == 201 and unverified.json()["attributes"]["sha_verified"] is False
+        a.put("/v1/projects/PTH/repo", json={"path": str(repo)})
+        fake = a.post("/v1/projects/PTH/commits", json={"sha": "1" * 40, "title": "нет такого", "implements": ["PTH-FR-001"]})
+        assert fake.status_code == 422 and fake.json()["error"]["code"] == "COMMIT_NOT_FOUND"
+        short = a.post("/v1/projects/PTH/commits", json={"sha": head[:7], "title": "реализация", "implements": ["PTH-FR-001"]})
+        assert short.status_code == 201
+        assert short.json()["attributes"] == {"sha": head, "sha_verified": True}
+        dup = a.post("/v1/projects/PTH/commits", json={"sha": head, "title": "повтор", "implements": []})
+        assert dup.status_code == 409  # короткий и полный SHA — один коммит
+        a.post("/v1/projects/PTH/git/sync")
+        synced = [x for x in a.get("/v1/projects/PTH/artifacts", params={"type": "COMMIT"}).json() if x["external_key"] != head
+                  and x["external_key"] != "0" * 40]
+        assert synced and all(x["attributes"]["sha_verified"] is True for x in synced)
+        repo.rename(repo.parent / "moved")
+        gone = a.post("/v1/projects/PTH/commits", json={"sha": "3" * 40, "title": "репозиторий пропал", "implements": []})
+        assert gone.status_code == 422 and gone.json()["error"]["code"] == "REPO_UNAVAILABLE"

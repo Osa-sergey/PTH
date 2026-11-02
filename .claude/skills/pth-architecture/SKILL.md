@@ -14,12 +14,12 @@ description: Предложение архитектурных решений (A
 
 ## Шаги
 
-1. Проверь доступ: `python3 sdk/pth_client.py me`.
-2. Собери ограничения: `python3 sdk/pth_client.py context <KEY> <ID> --depth 1`. Учти НФТ, которые ограничивают решение (связь `constrains` в PTH не реализована, см. текст требований).
-3. Посмотри существующие решения: `python3 sdk/pth_client.py artifacts <KEY> --type ADR`. Новые номера ADR — следующие за последним.
+1. Проверь доступ: `sdk/pth me`.
+2. Собери ограничения: `sdk/pth context <KEY> <ID> --depth 1`. Учти НФТ, которые ограничивают решение (связь `constrains` в PTH не реализована, см. текст требований).
+3. Посмотри существующие решения: `sdk/pth artifacts <KEY> --type ADR`. Новые номера ADR — следующие за последним.
 4. Предложи 1–3 варианта для каждого требования: что делаем, какие требования закрывает, какие риски. Варианты покажи пользователю до записи.
-5. После выбора пользователем сформируй черновик: операции `create_artifact` (type ADR, display_id `<KEY>-ADR-NNN`, number, title, text с вариантами и причиной) и `create_relation` (type `motivates`, source — требование, target — ADR). Сохрани в JSON и выполни `python3 sdk/pth_client.py propose <KEY> <файл.json>`.
-6. Примени только после подтверждения: `python3 sdk/pth_client.py apply-changeset <KEY> <uid>`.
+5. После выбора пользователем сформируй черновик: операции `create_artifact` (type ADR, display_id `<KEY>-ADR-NNN`, number, title, text с вариантами и причиной) и `create_relation` (type `motivates`, source — требование, target — ADR). Сохрани в JSON и выполни `sdk/pth propose <KEY> <файл.json>`.
+6. Примени только после подтверждения: `sdk/pth apply-changeset <KEY> <uid>`.
 
 ## Выход
 
