@@ -3,7 +3,7 @@ import { pthApi } from '@/shared/api/pthApi';
 import { useAsync } from '@/shared/lib/useAsync';
 import { ArtifactEditor } from './ArtifactEditor';
 import { useState } from 'react';
-import { Badge, Button } from '@/shared/ui';
+import { Badge, Button, InlineAlert } from '@/shared/ui';
 import type { ComplianceItem, RelationRow } from '@/entities/pth/types';
 import { Loaded, Section, StatusText } from './common';
 import { RevisionHistory } from './RevisionHistory';
@@ -39,6 +39,12 @@ export function ArtifactCard({ projectKey, displayId, onOpen, hideDiagram = fals
             onCancel={() => setEditing(false)} />
         ) : (
           <div className="flex flex-col gap-4">
+            {/* Архивный элемент только для чтения (409 ARTIFACT_ARCHIVED); вернуть — через restore. */}
+            {d.archived_at && (
+              <InlineAlert tone="warning"
+                message={`В архиве с ${new Date(d.archived_at).toLocaleDateString('ru-RU')}: ${d.archive_reason ?? 'причина не указана'}. Элемент не участвует в анализе, его связи скрыты, правка недоступна.`}
+                action={d.replaced_by ? <span className="text-meta">Преемник: <RelationEnd id={d.replaced_by} onOpen={onOpen} /></span> : undefined} />
+            )}
             <div className="flex flex-col gap-2 rounded-card border border-border bg-surface p-4">
               <h3 className="text-ui font-semibold">{d.title}</h3>
               {d.type === 'DIAGRAM' && !hideDiagram && <DiagramView format={formatOf(d.attributes)} source={d.text} title={d.title} />}
@@ -46,7 +52,7 @@ export function ArtifactCard({ projectKey, displayId, onOpen, hideDiagram = fals
                 {d.type === 'DIAGRAM'
                   ? <p className="text-ui text-text-muted">Исходник схемы не показывается в карточке. Редактируется на вкладке «Редактирование».</p>
                   : <p className="whitespace-pre-wrap text-ui text-text">{d.text || 'Текст не задан.'}</p>}
-                {d.type !== 'DIAGRAM' && <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Редактировать</Button>}
+                {d.type !== 'DIAGRAM' && !d.archived_at && <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Редактировать</Button>}
               </div>
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-meta">
                 <dt className="text-text-muted">тип</dt><dd>{d.type}</dd>
@@ -63,8 +69,8 @@ export function ArtifactCard({ projectKey, displayId, onOpen, hideDiagram = fals
             </div>
             {(d.type === 'US' || d.type === 'FR') && <ProcessDiagrams projectKey={projectKey} displayId={displayId} relations={relations} onOpen={onOpen} />}
             <Origins projectKey={projectKey} displayId={displayId} />
-            <ImplementationStatus displayId={displayId} type={d.type} excluded={Boolean(d.exemption_reason)}
-              relations={relations} compliance={compliance} />
+            {!d.archived_at && <ImplementationStatus displayId={displayId} type={d.type} excluded={Boolean(d.exemption_reason)}
+              relations={relations} compliance={compliance} />}
             <div className="flex flex-col gap-3 rounded-card border border-border bg-surface p-4">
               <h3 className="text-ui font-semibold">Связи</h3>
               <Loaded state={relations} retry={relations.reload}>

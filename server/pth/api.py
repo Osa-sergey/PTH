@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pth import auth, domain, importer, jobs, llm, releases
@@ -14,7 +15,7 @@ from pth.models import (
     Artifact, ArtifactRevision, ChangeSet, ExtractionJob, ImportSession, Project, Relation, new_uid, utcnow,
 )
 from pth.schemas import (
-    ArtifactIn, ArtifactOut, ChangeSetIn, ChangeSetOut, CommitIn, Direction, GraphOut, ImportDetail,
+    ArchiveIn, ArtifactIn, ArtifactOut, ChangeSetIn, ChangeSetOut, CommitIn, Direction, GraphOut, ImportDetail,
     ImpactRuleIn, ImpactRulePatch, CommitLinkIn, ReleaseIn, ReleaseItemsIn, ReleaseReasonIn, ReleaseDoIn, ReleaseMoveIn, ImportPreviewIn, DraftIn,
     ImportIn, ImportReport, LostOut, ProjectIn, ProjectOut, RelationIn, RelationOut, RevisionIn,
     RevisionOut, ExtractIn, ExtractOut, Proposal, ProposalsToChangeSetIn,
@@ -59,6 +60,8 @@ def _artifact_out(session: Session, artifact: Artifact) -> ArtifactOut:
         display_id=artifact.display_id, type=artifact.type, external_key=artifact.external_key,
         revision=rev.number, title=rev.title, text=rev.text, attributes=rev.attributes,
         exemption_reason=rev.exemption_reason, created_at=artifact.created_at,
+        archived_at=artifact.archived_at, archive_reason=artifact.archive_reason,
+        replaced_by=session.get(Artifact, artifact.replaced_by_uid).display_id if artifact.replaced_by_uid else None,
     )
 
 
@@ -104,12 +107,13 @@ def create_artifact(key: str, body: ArtifactIn, request: Request, session: Sessi
 
 
 @router.get("/projects/{key}/artifacts", response_model=list[ArtifactOut],
-            summary="Список артефактов проекта (страницами; общее число — в X-Total-Count)")
+            summary="Список артефактов проекта (страницами; общее число — в X-Total-Count; архивные — archived=only|include)")
 def list_artifacts(response: Response, key: str, type: str | None = Query(default=None),
                    offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=500),
+                   archived: str = Query(default="exclude", pattern="^(exclude|only|include)$"),
                    session: Session = Depends(get_session)):
     domain.get_project(session, key)
-    rows, total = domain.artifacts_page(session, key, type, offset, limit)
+    rows, total = domain.artifacts_page(session, key, type, offset, limit, archived)
     response.headers["X-Total-Count"] = str(total)
     return [_artifact_out(session, a) for a in rows]
 
@@ -126,6 +130,25 @@ def add_revision(key: str, display_id: str, body: RevisionIn, request: Request, 
     artifact, rev = domain.add_revision(session, key, display_id, body.title, body.text,
                                         body.attributes, body.exemption_reason, body.expected_revision)
     domain.audit(session, key, request.state.actor, "artifact.revise", display_id, {"revision": rev.number})
+    session.commit()
+    return _artifact_out(session, artifact)
+
+
+@router.post("/projects/{key}/artifacts/{display_id}/archive", response_model=ArtifactOut,
+             summary="В архив вместо удаления: ревизии, связи и ID сохраняются, из анализа элемент выпадает")
+def archive_artifact(key: str, display_id: str, body: ArchiveIn, request: Request, session: Session = Depends(get_session)):
+    artifact = domain.archive_artifact(session, key, display_id, body.reason, body.replaced_by)
+    domain.audit(session, key, request.state.actor, "artifact.archive", display_id,
+                 {"reason": body.reason, **({"replaced_by": body.replaced_by} if body.replaced_by else {})})
+    session.commit()
+    return _artifact_out(session, artifact)
+
+
+@router.post("/projects/{key}/artifacts/{display_id}/restore", response_model=ArtifactOut,
+             summary="Вернуть из архива новой ревизией (название TEST снова проверяется на уникальность)")
+def restore_artifact(key: str, display_id: str, request: Request, session: Session = Depends(get_session)):
+    artifact, rev = domain.restore_artifact(session, key, display_id)
+    domain.audit(session, key, request.state.actor, "artifact.restore", display_id, {"revision": rev.number})
     session.commit()
     return _artifact_out(session, artifact)
 
@@ -151,12 +174,16 @@ def create_relation(key: str, body: RelationIn, request: Request, session: Sessi
     return _relation_out(session, relation)
 
 
-@router.get("/projects/{key}/relations", response_model=list[RelationOut], summary="Связи проекта")
-def list_relations(key: str, session: Session = Depends(get_session)):
+@router.get("/projects/{key}/relations", response_model=list[RelationOut],
+            summary="Связи проекта (без архивных связей и связей архивных элементов; все — include_archived=true)")
+def list_relations(key: str, include_archived: bool = Query(default=False), session: Session = Depends(get_session)):
     domain.get_project(session, key)
-    rels = session.scalars(select(Relation).where(Relation.project_key == key)
-                           .order_by(Relation.created_at))
-    return [_relation_out(session, r) for r in rels]
+    query = select(Relation).where(Relation.project_key == key).order_by(Relation.created_at)
+    if not include_archived:
+        archived = select(Artifact.uid).where(Artifact.project_key == key, Artifact.archived_at.is_not(None))
+        query = query.where(Relation.archived_at.is_(None), Relation.source_uid.not_in(archived),
+                            Relation.target_uid.not_in(archived))
+    return [_relation_out(session, r) for r in session.scalars(query)]
 
 
 @router.post("/projects/{key}/commits", status_code=201, response_model=ArtifactOut,
@@ -532,7 +559,7 @@ def search(key: str, q: str = Query(min_length=1, max_length=200), type: str | N
            limit: int = Query(default=20, ge=1, le=200), session: Session = Depends(get_session)):
     domain.get_project(session, key)
     needle = q.strip().lower()
-    query = select(Artifact).where(Artifact.project_key == key).order_by(Artifact.display_id)
+    query = select(Artifact).where(Artifact.project_key == key, Artifact.archived_at.is_(None)).order_by(Artifact.display_id)
     if type:
         query = query.where(Artifact.type == type)
     found = []
@@ -550,7 +577,8 @@ def search(key: str, q: str = Query(min_length=1, max_length=200), type: str | N
 def context(key: str, focus: str, depth: int = Query(default=1, ge=1, le=2), session: Session = Depends(get_session)):
     card = _artifact_out(session, domain.get_artifact(session, key, focus))
     graph = domain.graph(session, key, focus, depth, "both", GRAPH_LIMIT_MAX)
-    all_kinds = domain.lost_items(session, key)[0] + domain.lost_items(session, key, reason="no_code_link")[0]
+    all_kinds = [i for reason in ("no_reflection", "no_code_link", "unverified_commit")
+                 for i in domain.lost_items(session, key, reason=reason)[0]]
     lost_item = next((i for i in all_kinds if i["display_id"] == focus), None)
     drafts = session.scalars(select(ChangeSet).where(ChangeSet.project_key == key, ChangeSet.state == "draft"))
     return {
@@ -1317,13 +1345,13 @@ def status(key: str, session: Session = Depends(get_session)):
 # --- анализ --------------------------------------------------------------------
 
 @router.get("/projects/{key}/lost", response_model=LostOut,
-            summary="Потерянные элементы (reason=no_reflection по умолчанию) или не реализованные (reason=no_code_link)")
+            summary="Потерянные элементы (reason=no_reflection по умолчанию), не реализованные (no_code_link) или реализованные непроверенным коммитом (unverified_commit)")
 def lost(
     response: Response,
     key: str,
     type: str | None = Query(default=None),
     priority: str | None = Query(default=None, pattern=r"^P[0-3]$"),
-    reason: str = Query(default="no_reflection", pattern="^(no_code_link|no_reflection)$"),
+    reason: str = Query(default="no_reflection", pattern="^(no_code_link|no_reflection|unverified_commit)$"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -1362,6 +1390,16 @@ def _mark_interrupted_jobs(session_factory) -> None:
             session.commit()
 
 
+# Конфликты уникальности, которые проверка в коде не ловит при параллельной записи: (признаки в тексте ошибки, код, сообщение).
+_UNIQUE_CONFLICTS = [
+    (("artifacts.title_key", "uq_artifacts_test_title"), "TEST_EXISTS", "TEST с таким названием уже есть (параллельная запись)"),
+    (("relations.type, relations.source_uid, relations.target_uid", "relations_type_source_uid_target_uid_key"),
+     "DUPLICATE_RELATION", "Такая связь уже есть (параллельная запись)"),
+    (("artifacts.project_key, artifacts.external_key", "artifacts_project_key_external_key_key"),
+     "COMMIT_EXISTS", "Коммит уже зарегистрирован (параллельная запись)"),
+]
+
+
 def create_app(database_url: str | None = None) -> FastAPI:
     url = database_url or os.environ.get("PTH_DATABASE_URL", DEFAULT_DB)
     engine = make_engine(url)
@@ -1384,5 +1422,15 @@ def create_app(database_url: str | None = None) -> FastAPI:
     async def domain_error(_: Request, exc: domain.DomainError):
         return JSONResponse(status_code=exc.status,
                             content={"error": {"code": exc.code, "message": exc.message}})
+
+    @app.exception_handler(IntegrityError)
+    async def integrity_error(_: Request, exc: IntegrityError):
+        # Параллельные запросы прошли проверку в коде одновременно; второго остановил уникальный индекс.
+        # SQLite называет колонки («artifacts.project_key, artifacts.title_key»), PostgreSQL — имя ограничения.
+        detail = str(exc.orig)
+        for markers, code, message in _UNIQUE_CONFLICTS:
+            if any(m in detail for m in markers):
+                return JSONResponse(status_code=409, content={"error": {"code": code, "message": message}})
+        raise exc
 
     return app

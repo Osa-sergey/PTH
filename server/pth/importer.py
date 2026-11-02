@@ -255,7 +255,7 @@ def execute_op(session: Session, key: str, op: dict) -> None:
                                      created_at=utcnow()))
         session.flush()
     elif kind == "add_revision":
-        artifact = domain.get_artifact(session, key, op["display_id"])
+        artifact = domain.require_active(domain.get_artifact(session, key, op["display_id"]))
         current = domain.latest_revision(session, artifact)
         expected = op.get("expected_revision")
         if expected is not None and expected != current.number:
@@ -269,17 +269,12 @@ def execute_op(session: Session, key: str, op: dict) -> None:
         session.flush()
     elif kind == "create_relation":
         domain.create_relation(session, key, op["type"], op["source"], op["target"])
-    elif kind == "delete_relation":
-        from pth.models import Relation as RelationModel
-        source = domain.get_artifact(session, key, op["source"])
-        target = domain.get_artifact(session, key, op["target"])
-        rel = session.scalar(select(RelationModel).where(
-            RelationModel.type == op["type"], RelationModel.source_uid == source.uid,
-            RelationModel.target_uid == target.uid))
-        if rel is None:
-            raise domain.DomainError(404, "RELATION_NOT_FOUND", f"Связи {op['type']} {op['source']}→{op['target']} нет")
-        session.delete(rel)
-        session.flush()
+    elif kind == "delete_relation":  # имя операции прежнее; связь уходит в архив, а не стирается (спека §7.1)
+        domain.archive_relation(session, key, op["type"], op["source"], op["target"])
+    elif kind == "archive_artifact":
+        domain.archive_artifact(session, key, op["display_id"], op.get("reason", ""), op.get("replaced_by"))
+    elif kind == "restore_artifact":
+        domain.restore_artifact(session, key, op["display_id"])
     else:
         raise domain.DomainError(422, "INVALID_OPERATION", f"Неизвестная операция: {kind!r}")
 
@@ -320,6 +315,10 @@ def describe_operations(session: Session, key: str, operations: list[dict], chec
             item.update(kind="revise", display_id=op["display_id"], title=op["title"], text=op.get("text", ""), priority=attrs.get("priority"),
                         before=before, expected_revision=op.get("expected_revision"))
             fresh.setdefault(op["display_id"], op["title"])
+        elif kind in ("archive_artifact", "restore_artifact"):
+            item.update(kind="archive" if kind == "archive_artifact" else "restore", display_id=op["display_id"],
+                        title=_title_of(session, key, op["display_id"], fresh), reason=op.get("reason"),
+                        replaced_by=op.get("replaced_by"))
         elif kind in ("create_relation", "delete_relation"):
             item.update(kind="link" if kind == "create_relation" else "unlink", type=op["type"], source=op["source"], target=op["target"],
                         source_title=_title_of(session, key, op["source"], fresh), target_title=_title_of(session, key, op["target"], fresh))
