@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pth import auth, domain, importer, jobs, llm, releases
@@ -550,7 +551,8 @@ def search(key: str, q: str = Query(min_length=1, max_length=200), type: str | N
 def context(key: str, focus: str, depth: int = Query(default=1, ge=1, le=2), session: Session = Depends(get_session)):
     card = _artifact_out(session, domain.get_artifact(session, key, focus))
     graph = domain.graph(session, key, focus, depth, "both", GRAPH_LIMIT_MAX)
-    all_kinds = domain.lost_items(session, key)[0] + domain.lost_items(session, key, reason="no_code_link")[0]
+    all_kinds = [i for reason in ("no_reflection", "no_code_link", "unverified_commit")
+                 for i in domain.lost_items(session, key, reason=reason)[0]]
     lost_item = next((i for i in all_kinds if i["display_id"] == focus), None)
     drafts = session.scalars(select(ChangeSet).where(ChangeSet.project_key == key, ChangeSet.state == "draft"))
     return {
@@ -1317,13 +1319,13 @@ def status(key: str, session: Session = Depends(get_session)):
 # --- анализ --------------------------------------------------------------------
 
 @router.get("/projects/{key}/lost", response_model=LostOut,
-            summary="Потерянные элементы (reason=no_reflection по умолчанию) или не реализованные (reason=no_code_link)")
+            summary="Потерянные элементы (reason=no_reflection по умолчанию), не реализованные (no_code_link) или реализованные непроверенным коммитом (unverified_commit)")
 def lost(
     response: Response,
     key: str,
     type: str | None = Query(default=None),
     priority: str | None = Query(default=None, pattern=r"^P[0-3]$"),
-    reason: str = Query(default="no_reflection", pattern="^(no_code_link|no_reflection)$"),
+    reason: str = Query(default="no_reflection", pattern="^(no_code_link|no_reflection|unverified_commit)$"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=500),
     session: Session = Depends(get_session),
@@ -1362,6 +1364,16 @@ def _mark_interrupted_jobs(session_factory) -> None:
             session.commit()
 
 
+# Конфликты уникальности, которые проверка в коде не ловит при параллельной записи: (признаки в тексте ошибки, код, сообщение).
+_UNIQUE_CONFLICTS = [
+    (("artifacts.title_key", "uq_artifacts_test_title"), "TEST_EXISTS", "TEST с таким названием уже есть (параллельная запись)"),
+    (("relations.type, relations.source_uid, relations.target_uid", "relations_type_source_uid_target_uid_key"),
+     "DUPLICATE_RELATION", "Такая связь уже есть (параллельная запись)"),
+    (("artifacts.project_key, artifacts.external_key", "artifacts_project_key_external_key_key"),
+     "COMMIT_EXISTS", "Коммит уже зарегистрирован (параллельная запись)"),
+]
+
+
 def create_app(database_url: str | None = None) -> FastAPI:
     url = database_url or os.environ.get("PTH_DATABASE_URL", DEFAULT_DB)
     engine = make_engine(url)
@@ -1384,5 +1396,15 @@ def create_app(database_url: str | None = None) -> FastAPI:
     async def domain_error(_: Request, exc: domain.DomainError):
         return JSONResponse(status_code=exc.status,
                             content={"error": {"code": exc.code, "message": exc.message}})
+
+    @app.exception_handler(IntegrityError)
+    async def integrity_error(_: Request, exc: IntegrityError):
+        # Параллельные запросы прошли проверку в коде одновременно; второго остановил уникальный индекс.
+        # SQLite называет колонки («artifacts.project_key, artifacts.title_key»), PostgreSQL — имя ограничения.
+        detail = str(exc.orig)
+        for markers, code, message in _UNIQUE_CONFLICTS:
+            if any(m in detail for m in markers):
+                return JSONResponse(status_code=409, content={"error": {"code": code, "message": message}})
+        raise exc
 
     return app

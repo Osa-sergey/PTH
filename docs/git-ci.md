@@ -89,7 +89,7 @@ python3 sdk/pth_runner.py --project PTH --repo "$WORKSPACE" --commit "$CI_COMMIT
 К любому запуску можно приложить файл до 25 МБ: лог, отчёт нагрузочного теста, Allure, SARIF, JSON quality gate. Файл неизменяем, хранится с sha256, скачивается как вложение.
 
 - Хук всегда прикладывает полный вывод команды как `output.log` и файлы, перечисленные в `artifacts`.
-- Для внешнего CI: `python3 sdk/pth_client.py attach <KEY> <evidence_uid> <файл>`. `evidence_uid` приходит в ответе `POST /ci/runs`.
+- Для внешнего CI: `sdk/pth attach <KEY> <evidence_uid> <файл>`. `evidence_uid` приходит в ответе `POST /ci/runs`.
 - API: `POST /projects/{key}/evidence/{uid}/attachments?name=...` (тело — содержимое файла), `GET /projects/{key}/attachments?evidence=...`, `GET /projects/{key}/attachments/{uid}`.
 
 ## Что попадает в ПСИ

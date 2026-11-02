@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from pth.models import Artifact, ArtifactRevision, Project, Relation, new_uid, utcnow
@@ -27,6 +27,7 @@ RELATION_RULES: dict[str, tuple[set[str], set[str]]] = {
 RECOMMENDED = {
     "no_code_link": "связать с коммитом (implements) или указать обоснованное исключение",
     "no_reflection": "добавить ФТ с refines к этой US или ADR с motivates",
+    "unverified_commit": "подключить репозиторий проекта и зарегистрировать коммит заново: SHA не проверен по Git",
 }
 
 
@@ -45,6 +46,8 @@ class Analysis:
     relations: list[Relation] = field(default_factory=list)
     implemented_by: dict[str, Artifact] = field(default_factory=dict)
     reflected: set[str] = field(default_factory=set)
+    # реализованы только коммитами с sha_verified=false (PTH-FR-081: «commit без проверки»); старые коммиты без флага не считаются
+    unverified_only: set[str] = field(default_factory=set)
 
     def reasons(self, artifact: Artifact) -> list[str]:
         rev = self.revisions[artifact.uid]
@@ -53,6 +56,8 @@ class Analysis:
         found = []
         if artifact.type in REQUIREMENT_TYPES and artifact.uid not in self.implemented_by:
             found.append("no_code_link")
+        elif artifact.uid in self.unverified_only:
+            found.append("unverified_commit")
         if artifact.type == "US" and artifact.uid not in self.reflected:
             found.append("no_reflection")
         return found
@@ -86,13 +91,15 @@ def latest_revision(session: Session, artifact: Artifact) -> ArtifactRevision:
 
 
 def _next_number(session: Session, key: str, type_: str) -> int:
-    current = session.scalar(
-        select(Artifact.number)
-        .where(Artifact.project_key == key, Artifact.type == type_)
-        .order_by(Artifact.number.desc())
-        .limit(1)
-    )
-    return (current or 0) + 1
+    """Следующий номер из счётчика artifact_sequences. Счётчик не ниже текущего максимума: артефакты с
+    номерами, выданными в обход счётчика (импорт, ChangeSet), его подтягивают. UPDATE держит блокировку записи
+    до конца транзакции, поэтому параллельный запрос получит следующий номер, а не тот же."""
+    params = {"k": key, "t": type_}
+    session.execute(text("INSERT INTO artifact_sequences (project_key, type, last) VALUES (:k, :t, 0) "
+                         "ON CONFLICT (project_key, type) DO NOTHING"), params)
+    return session.execute(text(
+        "UPDATE artifact_sequences SET last = MAX(last, (SELECT COALESCE(MAX(number), 0) FROM artifacts "
+        "WHERE project_key = :k AND type = :t)) + 1 WHERE project_key = :k AND type = :t RETURNING last"), params).scalar_one()
 
 
 # --- команды -------------------------------------------------------------------
@@ -217,7 +224,25 @@ def create_relation(session, key, type_, source_id, target_id) -> Relation:
 
 
 def create_commit(session, key, sha, title, implements):
+    """SHA проверяется по подключённому репозиторию (PTH-FR-046): неизвестный коммит не регистрируется,
+    короткий SHA разворачивается в полный. Без репозитория коммит принимается с sha_verified=false."""
+    from pth import gitops
+    from pth.models import ProjectRepo
     get_project(session, key)
+    repo = session.get(ProjectRepo, key)
+    verified = False
+    if repo is not None:
+        try:
+            oid = gitops.resolve_commit(repo.path, sha)
+            if oid is None:
+                gitops.validate_repo(repo.path)  # пропавший каталог — не «коммита нет», а репозиторий недоступен
+        except gitops.GitError as exc:
+            raise DomainError(422, "REPO_UNAVAILABLE", f"Подключённый репозиторий недоступен: {exc}")
+        if oid is None and len(sha) < 40 and gitops.prefix_matches(repo.path, sha) > 1:
+            raise DomainError(422, "COMMIT_AMBIGUOUS", f"Короткий SHA {sha} неоднозначен в репозитории: укажите длиннее")
+        if oid is None:
+            raise DomainError(422, "COMMIT_NOT_FOUND", f"Коммит {sha} не найден в подключённом репозитории")
+        sha, verified = oid, True
     if session.scalar(select(Artifact).where(
         Artifact.project_key == key, Artifact.external_key == sha,
     )) is not None:
@@ -226,7 +251,8 @@ def create_commit(session, key, sha, title, implements):
     for t in targets:
         if t.type not in RELATION_RULES["implements"][1]:
             raise DomainError(422, "INVALID_RELATION", f"Коммит не может реализовывать {t.type}")
-    commit = _add_artifact(session, key, "COMMIT", title, sha, {"sha": sha}, None, external_key=sha)
+    commit = _add_artifact(session, key, "COMMIT", title, sha, {"sha": sha, "sha_verified": verified}, None,
+                           external_key=sha)
     for t in targets:
         session.add(Relation(uid=new_uid(), project_key=key, type="implements",
                              source_uid=commit.uid, target_uid=t.uid, status="confirmed",
@@ -240,7 +266,8 @@ def ensure_commit(session, key, sha: str, title: str, author: str = "", committe
     existing = session.scalar(select(Artifact).where(Artifact.project_key == key, Artifact.external_key == sha))
     if existing is not None:
         return existing, False
-    attrs = {"sha": sha, **({"author": author} if author else {}), **({"committed_at": committed_at} if committed_at else {})}
+    attrs = {"sha": sha, "sha_verified": True,  # коммит прочитан из подключённого репозитория
+             **({"author": author} if author else {}), **({"committed_at": committed_at} if committed_at else {})}
     commit = _add_artifact(session, key, "COMMIT", (title or sha[:10])[:300], sha, attrs, None, external_key=sha)
     return commit, True
 
@@ -283,6 +310,11 @@ def link_commit(session, key: str, sha: str, implements: list[str]):
 
 def analyze(session: Session, key: str) -> Analysis:
     a = Analysis()
+    # Связи читаются первыми: запросы идут без общего снимка, и связь, записанная параллельно между ними, иначе
+    # ссылалась бы на ещё не прочитанный артефакт (KeyError → 500). Артефакт пишется раньше своих связей и вместе
+    # с ревизией, поэтому всё, на что ссылаются прочитанные связи, попадёт в следующие запросы.
+    relations = list(session.scalars(select(Relation).where(
+        Relation.project_key == key, Relation.status == "confirmed").order_by(Relation.created_at)))
     arts = list(session.scalars(select(Artifact).where(Artifact.project_key == key)))
     a.by_uid = {x.uid: x for x in arts}
     if arts:
@@ -290,16 +322,19 @@ def analyze(session: Session, key: str) -> Analysis:
             ArtifactRevision.artifact_uid.in_(list(a.by_uid))).order_by(ArtifactRevision.number))
         for r in revs:  # по возрастанию номера: остаётся последняя
             a.revisions[r.artifact_uid] = r
-    a.relations = list(session.scalars(select(Relation).where(
-        Relation.project_key == key, Relation.status == "confirmed").order_by(Relation.created_at)))
+    a.relations = relations
+    commits_of: dict[str, list[Artifact]] = {}
     for r in a.relations:
         s, t = a.by_uid[r.source_uid], a.by_uid[r.target_uid]
         if r.type == "implements":
             a.implemented_by[t.uid] = s
+            commits_of.setdefault(t.uid, []).append(s)
         elif r.type == "refines" and s.type == "FR" and t.type == "US":
             a.reflected.add(t.uid)
         elif r.type == "motivates" and s.type == "US" and t.type == "ADR":
             a.reflected.add(s.uid)
+    a.unverified_only = {uid for uid, commits in commits_of.items()
+                         if all(a.revisions[c.uid].attributes.get("sha_verified") is False for c in commits)}
     return a
 
 

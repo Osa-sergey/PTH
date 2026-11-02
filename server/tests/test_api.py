@@ -819,7 +819,7 @@ def test_migrations_are_applied_once(tmp_path):
     engine = make_engine(f"sqlite:///{tmp_path / 'm.db'}")
     assert migrate(engine) == MIGRATIONS[-1][0]
     assert migrate(engine) == MIGRATIONS[-1][0]
-    assert current_version(engine) == MIGRATIONS[-1][0] == 9
+    assert current_version(engine) == MIGRATIONS[-1][0] == 11
 
 
 def test_commits_evidence_and_key_management_endpoints(app, client):

@@ -2,7 +2,7 @@
 
 export type ArtifactType = 'US' | 'FR' | 'NFR' | 'AC' | 'ADR' | 'COMMIT' | 'TEST' | 'DIAGRAM';
 export type RelationType = 'refines' | 'motivates' | 'implements' | 'verifies' | 'illustrates';
-export type LostReason = 'no_code_link' | 'no_reflection';
+export type LostReason = 'no_code_link' | 'no_reflection' | 'unverified_commit';
 
 export interface LostItem {
   display_id: string;
@@ -146,6 +146,7 @@ export interface ImportDetail extends ImportReport {
 export const REASON_LABEL: Record<LostReason, string> = {
   no_code_link: 'Не реализован: нет связи с кодом (implements)',
   no_reflection: 'Потерян: user story без ФТ или ADR',
+  unverified_commit: 'Связь с кодом не подтверждена: SHA коммита не проверен по Git',
 };
 
 export interface StatusSummary {
