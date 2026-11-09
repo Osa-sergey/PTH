@@ -3,7 +3,8 @@ import { pthApi } from '@/shared/api/pthApi';
 import { useAsync } from '@/shared/lib/useAsync';
 import { ArtifactEditor } from './ArtifactEditor';
 import { useState } from 'react';
-import { Badge, Button, InlineAlert } from '@/shared/ui';
+import { Badge, Button, ConfirmActionDialog, InlineAlert, TextField } from '@/shared/ui';
+import { ApiError } from '@/shared/api/pthApi';
 import type { ComplianceItem, RelationRow } from '@/entities/pth/types';
 import { Loaded, Section, StatusText } from './common';
 import { RevisionHistory } from './RevisionHistory';
@@ -43,7 +44,12 @@ export function ArtifactCard({ projectKey, displayId, onOpen, hideDiagram = fals
             {d.archived_at && (
               <InlineAlert tone="warning"
                 message={`В архиве с ${new Date(d.archived_at).toLocaleDateString('ru-RU')}: ${d.archive_reason ?? 'причина не указана'}. Элемент не участвует в анализе, его связи скрыты, правка недоступна.`}
-                action={d.replaced_by ? <span className="text-meta">Преемник: <RelationEnd id={d.replaced_by} onOpen={onOpen} /></span> : undefined} />
+                action={
+                  <span className="flex items-center gap-3 text-meta">
+                    {d.replaced_by && <span>Преемник: <RelationEnd id={d.replaced_by} onOpen={onOpen} /></span>}
+                    <ArchiveAction projectKey={projectKey} displayId={displayId} archived onDone={() => setVersion((v) => v + 1)} />
+                  </span>
+                } />
             )}
             <div className="flex flex-col gap-2 rounded-card border border-border bg-surface p-4">
               <h3 className="text-ui font-semibold">{d.title}</h3>
@@ -52,7 +58,12 @@ export function ArtifactCard({ projectKey, displayId, onOpen, hideDiagram = fals
                 {d.type === 'DIAGRAM'
                   ? <p className="text-ui text-text-muted">Исходник схемы не показывается в карточке. Редактируется на вкладке «Редактирование».</p>
                   : <p className="whitespace-pre-wrap text-ui text-text">{d.text || 'Текст не задан.'}</p>}
-                {d.type !== 'DIAGRAM' && !d.archived_at && <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Редактировать</Button>}
+                {!d.archived_at && (
+                  <div className="flex shrink-0 gap-2">
+                    {d.type !== 'DIAGRAM' && <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Редактировать</Button>}
+                    {d.type !== 'COMMIT' && <ArchiveAction projectKey={projectKey} displayId={displayId} archived={false} onDone={() => setVersion((v) => v + 1)} />}
+                  </div>
+                )}
               </div>
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-meta">
                 <dt className="text-text-muted">тип</dt><dd>{d.type}</dd>
@@ -117,6 +128,66 @@ const TEST_LABEL: Record<string, string> = {
 const NEEDS_CODE = new Set(['FR', 'NFR', 'AC']);
 
 /** Реализация (коммиты по связи implements) и проверка (тесты по связи verifies) — что известно по данным PTH. */
+const ARCHIVE_ERRORS: Record<string, string> = {
+  ARTIFACT_NOT_FOUND: 'Преемник с таким ID не найден.',
+  ARTIFACT_ARCHIVED: 'Преемник сам в архиве — укажите действующий элемент.',
+  INVALID_REPLACEMENT: 'Элемент не может быть преемником самого себя.',
+  TEST_EXISTS: 'Действующий тест с таким названием уже есть — сначала уберите его в архив или переименуйте.',
+};
+
+/** Архив и восстановление (§5.4): ID, ревизии и связи сохраняются; восстановление — новая ревизия. */
+function ArchiveAction({ projectKey, displayId, archived, onDone }: { projectKey: string; displayId: string; archived: boolean; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [successor, setSuccessor] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const close = () => { setOpen(false); setError(undefined); };
+  const confirm = async () => {
+    setPending(true);
+    setError(undefined);
+    try {
+      if (archived) await pthApi.restoreArtifact(projectKey, displayId);
+      else await pthApi.archiveArtifact(projectKey, displayId, { reason: reason.trim(), ...(successor.trim() ? { replaced_by: successor.trim() } : {}) });
+      setOpen(false);
+      setReason('');
+      setSuccessor('');
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? ARCHIVE_ERRORS[e.code] ?? e.message : String(e));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <>
+      <Button size="sm" variant={archived ? 'secondary' : 'ghost'} onClick={() => setOpen(true)}>{archived ? 'Восстановить' : 'В архив'}</Button>
+      <ConfirmActionDialog
+        open={open}
+        title={archived ? `Восстановить ${displayId}?` : `Убрать ${displayId} в архив?`}
+        description={archived
+          ? 'Элемент вернётся в анализ новой ревизией; связи снова учитываются.'
+          : 'Элемент выпадет из анализа, потерянных, соответствия и релизов. ID, ревизии и связи сохраняются, его можно восстановить.'}
+        affectedObjectsSummary={archived ? undefined : (
+          <div className="flex flex-col gap-3">
+            <TextField label="Причина" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} className="w-full" />
+            <TextField label="Преемник (необязательно)" hint="ID действующего элемента" value={successor}
+              onChange={(e) => setSuccessor(e.target.value)} className="w-full" />
+          </div>
+        )}
+        confirmLabel={archived ? 'Восстановить' : 'В архив'}
+        intent={archived ? 'default' : 'danger'}
+        pending={pending}
+        errorMessage={error}
+        confirmDisabled={!archived && !reason.trim()}
+        confirmDisabledReason="Укажите причину"
+        onConfirm={confirm}
+        onCancel={close}
+      />
+    </>
+  );
+}
+
 function ImplementationStatus({ displayId, type, excluded, relations, compliance }: {
   displayId: string;
   type: string;

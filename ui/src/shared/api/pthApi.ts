@@ -271,4 +271,9 @@ export const pthApi = {
     request<ImportDetail>(`${project(key)}/imports/${encodeURIComponent(uid)}`),
   artifact: (key: string, displayId: string) =>
     request<ArtifactDetail>(`${project(key)}/artifacts/${encodeURIComponent(displayId)}`),
+  /** Архив вместо удаления: причина обязательна, replaced_by — действующий преемник. */
+  archiveArtifact: (key: string, displayId: string, body: { reason: string; replaced_by?: string }) =>
+    request<ArtifactDetail>(`${project(key)}/artifacts/${encodeURIComponent(displayId)}/archive`, { method: 'POST', body }),
+  restoreArtifact: (key: string, displayId: string) =>
+    request<ArtifactDetail>(`${project(key)}/artifacts/${encodeURIComponent(displayId)}/restore`, { method: 'POST' }),
 };
