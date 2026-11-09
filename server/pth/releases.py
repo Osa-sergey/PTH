@@ -70,7 +70,7 @@ def add_items(session: Session, key: str, rel: Release, display_ids: list[str], 
     have = {i.artifact_uid for i in _items(session, rel)}
     added = []
     for d in display_ids:
-        art = domain.get_artifact(session, key, d)
+        art = domain.require_active(domain.get_artifact(session, key, d))
         if art.type not in SCOPE_TYPES:
             raise DomainError(422, "TYPE_NOT_ALLOWED", f"В релиз берутся US, ФТ, НФТ и AC, а не {art.type}")
         chosen = [(art.uid, "manual")] + ([(u, "related") for u in sorted(_children(a, art.uid))] if with_related else [])
@@ -93,7 +93,7 @@ def remove_item(session: Session, key: str, rel: Release, display_id: str, with_
     removed = []
     for it in _items(session, rel):
         if it.artifact_uid in uids:
-            removed.append(a.by_uid[it.artifact_uid].display_id)
+            removed.append(a.get(it.artifact_uid).display_id)
             session.delete(it)
     if not removed:
         raise DomainError(404, "ITEM_NOT_IN_RELEASE", f"{display_id} нет в составе релиза")
@@ -157,7 +157,7 @@ def progress(session: Session, key: str, rel: Release, release_oid: str | None =
     in_scope = {i.artifact_uid for i in items}
     rows = []
     for it in items:
-        art = a.by_uid[it.artifact_uid]
+        art = a.get(it.artifact_uid)
         rev = a.revisions[art.uid]
         parents = sorted(a.by_uid[u].display_id for u in _parent_stories(a, art.uid)) if art.type in LEAF_TYPES else []
         missing = sorted(a.by_uid[u].display_id for u in _parent_stories(a, art.uid) if u not in in_scope) if art.type in LEAF_TYPES else []
@@ -167,6 +167,9 @@ def progress(session: Session, key: str, rel: Release, release_oid: str | None =
                 # Требование взято без user story: ни одной из его US нет в составе (или US у него нет вовсе)
                 "without_story": art.type in LEAF_TYPES and (not parents or len(missing) == len(parents)),
                 "stories": parents, "stories_missing": missing}
+        if art.archived_at is not None:  # убран в архив после включения в релиз — виден, но не считается готовым
+            rows.append({**base, "stage": "archived", "code": [], "verification": None, "leaves": 0})
+            continue
         if rev.exemption_reason:
             rows.append({**base, "stage": "excluded", "code": [], "verification": "excluded", "leaves": 0})
             continue
@@ -319,7 +322,7 @@ def compare(session: Session, key: str, a_uid: str, b_uid: str) -> dict:
     a = domain.analyze(session, key)
 
     def snap(rel: Release) -> dict[str, tuple[int, str]]:
-        return {a.by_uid[i.artifact_uid].display_id: (i.frozen_revision or a.revisions[i.artifact_uid].number,
+        return {a.get(i.artifact_uid).display_id: (i.frozen_revision or a.revisions[i.artifact_uid].number,
                                                       a.revisions[i.artifact_uid].title) for i in _items(session, rel)}
     sa, sb = snap(ra), snap(rb)
     row = lambda d, s: {"display_id": d, "title": s[d][1], "revision": s[d][0]}  # noqa: E731

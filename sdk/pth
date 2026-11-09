@@ -1,0 +1,13 @@
+#!/bin/sh
+# Запуск клиента PTH (sdk/pth_client.py) интерпретатором, где он работает: Python ≥ 3.10 с httpx.
+# Порядок: $PTH_PYTHON (явный выбор, без проверки), venv сервера (server/.venv), python3 из PATH — его
+# проверяем, потому что системный python3 часто старше 3.10 или без httpx. В систему ничего не ставится.
+# Использование как у клиента: sdk/pth me, sdk/pth context PTH PTH-US-001 --depth 2.
+here=$(cd "$(dirname "$0")" && pwd)
+[ -n "$PTH_PYTHON" ] && exec "$PTH_PYTHON" "$here/pth_client.py" "$@"
+[ -x "$here/../server/.venv/bin/python" ] && exec "$here/../server/.venv/bin/python" "$here/pth_client.py" "$@"
+if python3 -c 'import sys, httpx; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+  exec python3 "$here/pth_client.py" "$@"
+fi
+echo "pth: нужен Python ≥ 3.10 с httpx. Создайте server/.venv (docs/run-and-deploy.md) или задайте PTH_PYTHON." >&2
+exit 127

@@ -100,6 +100,8 @@ const withQuery = (path: string, params: Record<string, string | number | boolea
   return entries.length ? `${path}?${new URLSearchParams(entries.map(([k, v]) => [k, String(v)])).toString()}` : path;
 };
 
+export type ArchiveFilter = 'exclude' | 'only' | 'include';
+
 export const pthApi = {
   me: () => request<Me>('/me'),
   testsStatus: (key: string) =>
@@ -127,9 +129,10 @@ export const pthApi = {
   reviewPage: (key: string, offset: number, limit: number, severity?: string) =>
     request<{ counts: Record<string, number>; total: number; findings: ReviewFinding[]; rules: Record<string, ReviewRuleText> }>(
       withQuery(`${project(key)}/review`, { offset, limit, severity })),
-  artifactsPage: async (key: string, offset: number, limit: number, type?: string) => {
+  /** archived: exclude — только действующие (по умолчанию API), only — архив, include — все. */
+  artifactsPage: async (key: string, offset: number, limit: number, type?: string, archived?: ArchiveFilter) => {
     const token = readToken();
-    const response = await fetch(withQuery(`${BASE}${project(key)}/artifacts`, { offset, limit, type }), {
+    const response = await fetch(withQuery(`${BASE}${project(key)}/artifacts`, { offset, limit, type, archived }), {
       headers: token ? { Authorization: `Bearer ${token}`, Accept: 'application/json' } : { Accept: 'application/json' },
     });
     if (!response.ok) throw new ApiError(response.status, `HTTP_${response.status}`, response.statusText);
@@ -268,4 +271,9 @@ export const pthApi = {
     request<ImportDetail>(`${project(key)}/imports/${encodeURIComponent(uid)}`),
   artifact: (key: string, displayId: string) =>
     request<ArtifactDetail>(`${project(key)}/artifacts/${encodeURIComponent(displayId)}`),
+  /** Архив вместо удаления: причина обязательна, replaced_by — действующий преемник. */
+  archiveArtifact: (key: string, displayId: string, body: { reason: string; replaced_by?: string }) =>
+    request<ArtifactDetail>(`${project(key)}/artifacts/${encodeURIComponent(displayId)}/archive`, { method: 'POST', body }),
+  restoreArtifact: (key: string, displayId: string) =>
+    request<ArtifactDetail>(`${project(key)}/artifacts/${encodeURIComponent(displayId)}/restore`, { method: 'POST' }),
 };

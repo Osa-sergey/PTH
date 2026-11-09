@@ -14,11 +14,11 @@ description: Проверка соответствия требований Proj
 
 ## Шаги
 
-1. Проверь доступ: `python3 sdk/pth_client.py me`.
-2. Получи соответствие: `python3 sdk/pth_client.py compliance <KEY>`.
+1. Проверь доступ: `sdk/pth me`.
+2. Получи соответствие: `sdk/pth compliance <KEY>`.
 3. Сгруппируй по статусу: `verified`, `failed`, `stale`, `not_verified`, `no_test`, `excluded`.
 4. Для `failed` и `stale` покажи связанные тесты (`tests`) и причину. `stale` значит: требование изменено после последнего свидетельства.
-5. Для конкретного ID посмотри контекст: `python3 sdk/pth_client.py context <KEY> <ID>`.
+5. Для конкретного ID посмотри контекст: `sdk/pth context <KEY> <ID>`.
 6. Итог: сколько `verified` из всех проверяемых и что блокирует готовность (`readiness`).
 
 ## Выход
